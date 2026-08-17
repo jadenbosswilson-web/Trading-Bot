@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>NAS100 ICT Sniper</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  .signal-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .signal-pill { font-size: 24px; font-weight: 700; padding: 10px 22px; border-radius: 8px; }
+  .signal-pill.BUY { background: rgba(38,166,154,0.15); color: var(--green); }
+  .signal-pill.SELL { background: rgba(239,83,80,0.15); color: var(--red); }
+  .signal-pill.FLAT { background: rgba(139,147,167,0.15); color: var(--muted); }
+  .badge.bullish { color: var(--green); border-color: var(--green); }
+  .badge.bearish { color: var(--red); border-color: var(--red); }
+  .badge.kz-active { color: var(--amber); border-color: var(--amber); }
+  .reason { margin-top: 14px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .actions { margin-top: 18px; display: flex; gap: 12px; align-items: center; }
+  .qty-input { width: 70px; }
+  canvas { width: 100%; height: 220px; display: block; }
+  .checklist { display: flex; flex-direction: column; gap: 10px; }
+  .check-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-radius: 8px; background: #0e1220; border: 1px solid var(--border); }
+  .check-icon { flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
+  .check-icon.met { background: rgba(38,166,154,0.2); color: var(--green); }
+  .check-icon.unmet { background: rgba(139,147,167,0.15); color: var(--muted); }
+  .check-body .name { font-size: 13px; font-weight: 600; }
+  .check-body .detail { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .news-banner { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; }
+  .news-banner.blocked { background: rgba(239,83,80,0.12); color: var(--red); border: 1px solid rgba(239,83,80,0.4); }
+  .news-banner.clear { background: rgba(38,166,154,0.08); color: var(--green); border: 1px solid rgba(38,166,154,0.3); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>NAS100 ICT Sniper</h1>
+  <nav>
+    <span id="modeBadge" class="badge">—</span>
+    <span id="biasBadge" class="badge">bias —</span>
+    <span id="kzBadge" class="badge">kill zone —</span>
+    <a class="nav-link" href="/settings.html">Settings</a>
+    <a class="nav-link" href="/backtest.html">Backtest</a>
+    <button class="nav-btn" onclick="logout()">Log out</button>
+  </nav>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="signal-row">
+      <div id="signalPill" class="signal-pill FLAT">—</div>
+      <div>
+        <div style="font-size:22px;font-weight:700;" id="priceVal">—</div>
+        <div style="color:var(--muted);font-size:12px;" id="updatedAt">not loaded yet</div>
+      </div>
+      <div style="margin-left:auto;">
+        <button class="secondary" onclick="loadSignal()">Refresh now</button>
+      </div>
+    </div>
+
+    <div class="stat-grid" style="margin-top:16px;">
+      <div class="stat"><div class="label">Entry zone</div><div class="value" id="zoneVal">—</div></div>
+      <div class="stat"><div class="label">Zone type</div><div class="value" id="zoneKindVal">—</div></div>
+      <div class="stat"><div class="label">Stop</div><div class="value" id="stopVal">—</div></div>
+      <div class="stat"><div class="label">Target</div><div class="value" id="targetVal">—</div></div>
+    </div>
+
+    <div class="reason" id="reasonText">Loading signal…</div>
+
+    <div class="actions">
+      <label style="font-size:13px;color:var(--muted);">Qty
+        <input class="qty-input" id="qtyInput" type="number" step="0.01" />
+      </label>
+      <button class="primary" id="confirmBtn" disabled onclick="confirmTrade()">Confirm order</button>
+      <span class="msg" id="status"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Confluence checklist</h2>
+    <div id="checklist" class="checklist">
+      <div class="check-item"><div class="check-body"><div class="detail">Loading…</div></div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Price</h2>
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>Upcoming high/medium-impact news</h2>
+    <div id="newsBanner"></div>
+    <div class="scroll-table">
+      <table id="newsTable">
+        <thead><tr><th>Time</th><th>Currency</th><th>Impact</th><th>Event</th></tr></thead>
+        <tbody><tr><td colspan="4" style="color:var(--muted);">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Open positions</h2>
+    <table id="positionsTable">
+      <thead><tr><th>Instrument</th><th>Side</th><th>Qty</th><th>Avg price</th></tr></thead>
+      <tbody><tr><td colspan="4" style="color:var(--muted);">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<footer>This dashboard never places an order automatically. Every trade requires you to click "Confirm order" on your own account.</footer>
+
+<script src="/js/api.js"></script>
+<script>
+let lastSignal = null;
+
+async function loadSignal() {
+  setStatus('Fetching signal…', '');
+  try {
+    const data = await api('/api/signal');
+    if (!data) return; // redirected to login
+    lastSignal = data;
+    renderSignal(data);
+    renderChecklist(data.confluences);
+    drawChart(data.candles);
+    setStatus('Updated ' + new Date().toLocaleTimeString(), 'ok');
+  } catch (e) {
+    setStatus('Failed to load signal: ' + e.message, 'err');
+  }
+}
+
+async function loadNews() {
+  try {
+    const data = await api('/api/news');
+    if (!data) return;
+    const tbody = document.querySelector('#newsTable tbody');
+    if (!Array.isArray(data) || data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">No high/medium-impact events in the next 48h</td></tr>';
+    } else {
+      tbody.innerHTML = data.map(e => `<tr>
+        <td>${new Date(e.time).toLocaleString([], {weekday:'short', hour:'2-digit', minute:'2-digit'})}</td>
+        <td>${escapeHtml(e.country)}</td><td>${escapeHtml(e.impact)}</td><td>${escapeHtml(e.title)}</td>
+      </tr>`).join('');
+    }
+  } catch (e) {
+    document.querySelector('#newsTable tbody').innerHTML = `<tr><td colspan="4" style="color:var(--red);">Could not load calendar: ${e.message}</td></tr>`;
+  }
+}
+
+async function loadPositions() {
+  try {
+    const data = await api('/api/positions');
+    if (!data) return;
+    const tbody = document.querySelector('#positionsTable tbody');
+    if (!Array.isArray(data) || data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);">No open positions</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(p => `<tr>
+      <td>${escapeHtml(p.instrument ?? '-')}</td><td>${escapeHtml(p.side ?? '-')}</td><td>${escapeHtml(p.quantity ?? '-')}</td>
+      <td>${escapeHtml(p.averagePrice ?? p.avgPrice ?? '-')}</td>
+    </tr>`).join('');
+  } catch (e) { /* non-fatal */ }
+}
+
+function renderSignal(data) {
+  const pill = document.getElementById('signalPill');
+  pill.textContent = data.signal;
+  pill.className = 'signal-pill ' + data.signal;
+
+  document.getElementById('priceVal').textContent = data.price;
+  document.getElementById('updatedAt').textContent = 'Signal id ' + data.id.slice(0, 8);
+
+  const modeBadge = document.getElementById('modeBadge');
+  modeBadge.textContent = data.dry_run ? 'DRY RUN' : 'LIVE';
+  modeBadge.className = 'badge ' + (data.dry_run ? 'dry' : 'live');
+
+  const biasBadge = document.getElementById('biasBadge');
+  biasBadge.textContent = 'bias ' + (data.htf_bias ?? '—');
+  biasBadge.className = 'badge' + (data.htf_bias ? ' ' + data.htf_bias : '');
+
+  const kzBadge = document.getElementById('kzBadge');
+  kzBadge.textContent = data.kill_zone ? ('kill zone: ' + data.kill_zone) : 'no active kill zone';
+  kzBadge.className = 'badge' + (data.kill_zone ? ' kz-active' : '');
+
+  document.getElementById('zoneVal').textContent = data.entry_zone
+    ? `${data.entry_zone[0].toFixed(2)} – ${data.entry_zone[1].toFixed(2)}` : '—';
+  document.getElementById('zoneKindVal').textContent = data.entry_zone_kind ?? '—';
+  document.getElementById('stopVal').textContent = data.stop_loss ?? '—';
+  document.getElementById('targetVal').textContent = data.target ?? '—';
+  document.getElementById('reasonText').textContent = data.reason;
+  document.getElementById('qtyInput').value = data.quantity;
+
+  const btn = document.getElementById('confirmBtn');
+  if (data.signal === 'FLAT') {
+    btn.disabled = true;
+    btn.textContent = 'No sniper entry right now';
+  } else {
+    btn.disabled = false;
+    btn.textContent = `Confirm ${data.signal} ${data.symbol}${data.dry_run ? ' (simulated)' : ''}`;
+  }
+
+  const newsConfluence = (data.confluences || []).find(c => c.name.toLowerCase().includes('news'));
+  const banner = document.getElementById('newsBanner');
+  if (newsConfluence) {
+    banner.className = 'news-banner ' + (newsConfluence.met ? 'clear' : 'blocked');
+    banner.textContent = newsConfluence.met ? 'No news blackout active.' : ('News blackout: ' + newsConfluence.detail);
+  }
+}
+
+function renderChecklist(confluences) {
+  const el = document.getElementById('checklist');
+  if (!confluences || confluences.length === 0) {
+    el.innerHTML = '<div class="check-item"><div class="check-body"><div class="detail">No data</div></div></div>';
+    return;
+  }
+  el.innerHTML = confluences.map(c => `
+    <div class="check-item">
+      <div class="check-icon ${c.met ? 'met' : 'unmet'}">${c.met ? '✓' : '·'}</div>
+      <div class="check-body"><div class="name">${c.name}</div><div class="detail">${c.detail}</div></div>
+    </div>
+  `).join('');
+}
+
+async function confirmTrade() {
+  if (!lastSignal || lastSignal.signal === 'FLAT') return;
+  const qty = parseFloat(document.getElementById('qtyInput').value) || lastSignal.quantity;
+  const btn = document.getElementById('confirmBtn');
+  btn.disabled = true;
+  setStatus('Placing order…', '');
+  try {
+    const data = await api('/api/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ signal_id: lastSignal.id, side: lastSignal.signal, quantity: qty }),
+    });
+    setStatus('Order sent: ' + (data.orderCode || JSON.stringify(data)), 'ok');
+    loadPositions();
+    loadSignal();
+  } catch (e) {
+    setStatus('Order failed: ' + e.message, 'err');
+    btn.disabled = false;
+  }
+}
+
+function setStatus(text, cls) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = 'msg ' + cls;
+}
+
+function drawChart(candles) {
+  const canvas = document.getElementById('chart');
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!candles || candles.length === 0) return;
+  const closes = candles.map(c => c.close);
+  const min = Math.min(...closes), max = Math.max(...closes);
+  const pad = (max - min) * 0.1 || 1;
+  const lo = min - pad, hi = max + pad;
+  ctx.beginPath();
+  ctx.strokeStyle = '#26a69a';
+  ctx.lineWidth = 1.5;
+  closes.forEach((c, i) => {
+    const x = (i / (closes.length - 1)) * w;
+    const y = h - ((c - lo) / (hi - lo)) * h;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+(async function init() {
+  const user = await requireAuth();
+  if (!user) return;
+  loadSignal();
+  loadNews();
+  loadPositions();
+  setInterval(loadSignal, 30000);
+  setInterval(loadNews, 300000);
+  setInterval(loadPositions, 30000);
+})();
+</script>
+</body>
+</html>
