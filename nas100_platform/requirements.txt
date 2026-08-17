@@ -1,0 +1,16 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+httpx==0.27.2
+python-dotenv==1.0.1
+pydantic==2.9.2
+email-validator==2.2.0
+python-multipart==0.0.9
+socksio==1.0.0
+
+# --- multi-tenant platform additions ---
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9        # Postgres driver (used in production; SQLite is used for local dev)
+passlib[bcrypt]==1.7.4        # password hashing
+pyjwt==2.9.0                  # session tokens
+cryptography==43.0.1          # Fernet encryption for stored broker credentials
+slowapi==0.1.9                # basic rate limiting on auth endpoints
