@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Settings — NAS100 ICT Sniper</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header>
+  <h1>Settings</h1>
+  <nav>
+    <a class="nav-link" href="/">Dashboard</a>
+    <a class="nav-link" href="/backtest.html">Backtest</a>
+    <button class="nav-btn" onclick="logout()">Log out</button>
+  </nav>
+</header>
+
+<main>
+  <div class="panel">
+    <h2>Strategy settings</h2>
+    <div class="form-grid">
+      <div class="field"><label>Symbol</label><input id="symbol" /></div>
+      <div class="field"><label>Candle type</label><input id="candleType" /></div>
+      <div class="field"><label>Default quantity</label><input id="defaultQuantity" type="number" step="0.01" /></div>
+      <div class="field"><label>HTF minutes</label><input id="htfMinutes" type="number" /></div>
+      <div class="field"><label>Swing lookback</label><input id="swingLookback" type="number" /></div>
+      <div class="field"><label>Sweep lookback</label><input id="sweepLookback" type="number" /></div>
+      <div class="field"><label>Risk:reward</label><input id="riskReward" type="number" step="0.1" /></div>
+    </div>
+
+    <h2 style="margin-top:20px;">Confluences</h2>
+    <p style="color:var(--muted);font-size:13px;margin:-6px 0 12px;">Turn off any confluence you don't want gating your signals. HTF bias and LTF structure shift can't really be skipped — the strategy needs them to know a direction and an entry trigger exist at all — but you can still hide them from the checklist below.</p>
+    <div class="form-grid">
+      <div class="field checkbox-field" style="align-self:end;"><input type="checkbox" id="requireHtfBias" /><label style="margin:0;">HTF bias</label></div>
+      <div class="field checkbox-field" style="align-self:end;"><input type="checkbox" id="requireStructureShift" /><label style="margin:0;">LTF structure shift</label></div>
+      <div class="field checkbox-field" style="align-self:end;"><input type="checkbox" id="requireLiquiditySweep" /><label style="margin:0;">Liquidity sweep</label></div>
+      <div class="field checkbox-field" style="align-self:end;"><input type="checkbox" id="requireEntryZone" /><label style="margin:0;">Entry zone (OB / FVG / OTE)</label></div>
+      <div class="field checkbox-field" style="align-self:end;"><input type="checkbox" id="requireKillZone" /><label style="margin:0;">Kill zone timing</label></div>
+      <div class="field checkbox-field" style="align-self:end;"><input type="checkbox" id="newsEnabled" /><label style="margin:0;">News filter</label></div>
+      <div class="field checkbox-field" style="align-self:end;"><input type="checkbox" id="requireSmtDivergence" /><label style="margin:0;">SMT divergence</label></div>
+      <div class="field"><label>SMT correlated instrument</label>
+        <select id="smtSymbol">
+          <option value="SPX500_USD">ES / S&amp;P 500</option>
+          <option value="US30_USD">YM / Dow Jones</option>
+          <option value="DE30_EUR">DAX</option>
+        </select>
+      </div>
+    </div>
+
+    <h2 style="margin-top:20px;">News filter settings</h2>
+    <div class="form-grid">
+      <div class="field"><label>Min impact</label>
+        <select id="newsMinImpact"><option>Low</option><option>Medium</option><option>High</option></select>
+      </div>
+      <div class="field"><label>Currencies (comma-separated)</label><input id="newsCurrencies" /></div>
+      <div class="field"><label>Buffer before (min)</label><input id="newsBufferBefore" type="number" /></div>
+      <div class="field"><label>Buffer after (min)</label><input id="newsBufferAfter" type="number" /></div>
+      <div class="field checkbox-field" style="align-self:end;"><input type="checkbox" id="newsFailOpen" /><label style="margin:0;">Fail open if calendar unreachable</label></div>
+    </div>
+
+    <button class="primary" onclick="saveSettings()">Save settings</button>
+    <div class="msg" id="settingsMsg"></div>
+  </div>
+</main>
+
+<script src="/js/api.js"></script>
+<script>
+async function load() {
+  await requireAuth();
+  const s = await api('/api/settings');
+  document.getElementById('symbol').value = s.symbol;
+  document.getElementById('candleType').value = s.candle_type;
+  document.getElementById('defaultQuantity').value = s.default_quantity;
+  document.getElementById('htfMinutes').value = s.htf_minutes;
+  document.getElementById('swingLookback').value = s.swing_lookback;
+  document.getElementById('sweepLookback').value = s.sweep_lookback;
+  document.getElementById('riskReward').value = s.risk_reward;
+  document.getElementById('requireKillZone').checked = s.require_kill_zone;
+  document.getElementById('requireHtfBias').checked = s.require_htf_bias;
+  document.getElementById('requireStructureShift').checked = s.require_structure_shift;
+  document.getElementById('requireLiquiditySweep').checked = s.require_liquidity_sweep;
+  document.getElementById('requireEntryZone').checked = s.require_entry_zone;
+  document.getElementById('requireSmtDivergence').checked = s.require_smt_divergence;
+  document.getElementById('smtSymbol').value = s.smt_symbol;
+  document.getElementById('newsEnabled').checked = s.news_enabled;
+  document.getElementById('newsMinImpact').value = s.news_min_impact;
+  document.getElementById('newsCurrencies').value = s.news_currencies;
+  document.getElementById('newsBufferBefore').value = s.news_buffer_before_min;
+  document.getElementById('newsBufferAfter').value = s.news_buffer_after_min;
+  document.getElementById('newsFailOpen').checked = s.news_fail_open;
+}
+
+async function saveSettings() {
+  const msg = document.getElementById('settingsMsg');
+  msg.textContent = ''; msg.className = 'msg';
+  const body = {
+    symbol: document.getElementById('symbol').value,
+    candle_type: document.getElementById('candleType').value,
+    default_quantity: parseFloat(document.getElementById('defaultQuantity').value),
+    htf_minutes: parseInt(document.getElementById('htfMinutes').value),
+    swing_lookback: parseInt(document.getElementById('swingLookback').value),
+    sweep_lookback: parseInt(document.getElementById('sweepLookback').value),
+    risk_reward: parseFloat(document.getElementById('riskReward').value),
+    require_kill_zone: document.getElementById('requireKillZone').checked,
+    require_htf_bias: document.getElementById('requireHtfBias').checked,
+    require_structure_shift: document.getElementById('requireStructureShift').checked,
+    require_liquidity_sweep: document.getElementById('requireLiquiditySweep').checked,
+    require_entry_zone: document.getElementById('requireEntryZone').checked,
+    require_smt_divergence: document.getElementById('requireSmtDivergence').checked,
+    smt_symbol: document.getElementById('smtSymbol').value,
+    news_enabled: document.getElementById('newsEnabled').checked,
+    news_min_impact: document.getElementById('newsMinImpact').value,
+    news_currencies: document.getElementById('newsCurrencies').value,
+    news_buffer_before_min: parseInt(document.getElementById('newsBufferBefore').value),
+    news_buffer_after_min: parseInt(document.getElementById('newsBufferAfter').value),
+    news_fail_open: document.getElementById('newsFailOpen').checked,
+  };
+  try {
+    await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
+    msg.textContent = 'Saved.';
+    msg.className = 'msg ok';
+  } catch (err) {
+    msg.textContent = err.message;
+    msg.className = 'msg err';
+  }
+}
+
+load();
+</script>
+</body>
+</html>
