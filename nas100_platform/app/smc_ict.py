@@ -121,12 +121,12 @@ class ICTResult:
     # offer a "Confirm position" action off of this rather than waiting
     # for the fully-gated strict signal.
     entry_zone_met: bool = False
-    # Price-bucketed time-at-price read (see build_price_heatmap) — a
-    # Market-Profile/TPO-style read of where price has actually traded
-    # across the fetched history, including the still-forming last
-    # candle. Each entry is {top, bottom, intensity} with intensity
-    # normalized to [0, 1] against the hottest bucket in this same
-    # result. Buckets with zero weight are omitted, so this is typically
+    # Price-bucketed liquidity density read (see build_liquidity_heatmap)
+    # — built from real liquidity pools, confirmed grabs, and breaker
+    # blocks (plus a light live-edge layer so it still reacts between
+    # candle closes). Each entry is {top, bottom, intensity} with
+    # intensity normalized to [0, 1] against the hottest bucket in this
+    # same result. Buckets with zero weight are omitted, so this is typically
     # a small, sparse list rather than one entry per bucket.
     heatmap: list[dict] = field(default_factory=list)
 
@@ -414,30 +414,89 @@ def find_breaker_blocks(candles: list[Candle], lookback: int) -> list[Breaker]:
 
 
 # ----------------------------------------------------------------------
-# Price heat map (time-at-price / TPO-style)
+# Liquidity heat map
 # ----------------------------------------------------------------------
-def build_price_heatmap(candles: list[Candle], num_buckets: int = 40) -> list[dict]:
-    """A continuous time-at-price read across the fetched history — a
-    Market-Profile/TPO-style read (every bar "votes" for every price
-    bucket its [low, high] range touched), not a volume profile — this
-    data source doesn't carry reliable volume for an index CFD, so
-    "how many different bars' ranges passed through this price" stands
-    in for it, the same substitute classic Market Profile charting uses.
+def _provisional_extremes(candles: list[Candle], lookback: int) -> tuple[set[int], set[int]]:
+    """Whether the single most recent candle — typically still forming —
+    is itself a fresh local extreme relative to the `lookback` bars
+    before it. find_swing_points (and find_liquidity_pools) need
+    `lookback` bars of confirmation on BOTH sides, so neither can ever
+    flag anything that recent — structurally, the live edge is always
+    blind to it until confirmation catches up days... er, bars later.
+    Resting liquidity just beyond a fresh high/low is real before that
+    high/low has "structurally" confirmed — stops don't wait for a
+    lookback window.
 
-    This intentionally replaced an earlier version keyed off confirmed
-    swing points/liquidity grabs/breaker blocks: that data only changes
-    when a candle actually closes and confirms new structure, so the
-    map could sit visibly frozen for the entire length of a bar even
-    though the strategy was technically recomputing it every poll. Time-
-    at-price uses raw candle ranges instead, including the still-forming
-    live candle's current high/low — every poll's fresh quote can shift
-    it, so the map now genuinely updates live rather than only on a
-    structural event.
+    Deliberately checks only the *last* candle, not a trailing window of
+    several — during any ordinary trending/impulsive move, several
+    consecutive bars near the live edge would *all* individually qualify
+    as "a new local high" (each one is higher than the few before it,
+    almost by definition of a trend), which piled up disproportionate
+    weight into whatever the current price happens to be, well past
+    what a single fresh extreme deserves, and could outrank a genuinely
+    significant, already-proven level elsewhere. Checking only the very
+    last candle gives the live-edge reactivity this exists for (its
+    high/low changes on every live tick, so this re-evaluates fresh
+    every call) without that runaway effect.
 
-    Recency still matters: older bars are linearly downweighted (oldest
-    bar in the window at 30% strength, the most recent at 100%), so a
-    map built from hundreds of bars of history isn't dominated by a
-    congestion zone from days ago that's since become irrelevant.
+    Used only as a light, immediately-live layer in
+    build_liquidity_heatmap(); every other detector in this module
+    keeps the stricter, fully-confirmed definition."""
+    n = len(candles)
+    if n <= lookback:
+        return set(), set()
+    i = n - 1
+    highs, lows = set(), set()
+    window_high = candles[i].high
+    window_low = candles[i].low
+    if all(window_high > candles[i - j].high for j in range(1, lookback + 1)):
+        highs.add(i)
+    if all(window_low < candles[i - j].low for j in range(1, lookback + 1)):
+        lows.add(i)
+    return highs, lows
+
+
+def build_liquidity_heatmap(
+    candles: list[Candle],
+    liquidity_highs: set[int],
+    liquidity_lows: set[int],
+    grabs: list[SweepEvent],
+    breakers: list[Breaker],
+    swing_lookback: int,
+    num_buckets: int = 40,
+) -> list[dict]:
+    """A price-bucketed density read of where liquidity is actually
+    concentrated — built from the same real ICT liquidity concepts this
+    module already detects, not a generic "where has price spent time"
+    congestion read (an earlier version of this function tried that,
+    time-at-price/TPO-style, purely to make it feel more responsive
+    between candle closes — but that isn't liquidity, and it doesn't
+    track any of the real levels this strategy actually reasons about,
+    which is exactly what it looked like: fake, disconnected from real
+    liquidity spots):
+
+    - Every liquidity pool point (see find_liquidity_pools — the loose,
+      inclusive-comparison definition, since "equal highs/lows piling
+      into the same price" is itself a textbook liquidity concept) adds
+      weight to its own bucket.
+    - Every confirmed liquidity grab (see find_all_liquidity_grabs) adds
+      the most weight of anything here — a level that's actually been
+      swept is proven significant, not merely sitting there untouched.
+    - Every breaker block (see find_breaker_blocks) adds weight across
+      the whole zone it spans.
+    - Provisional extremes (see _provisional_extremes) add a lighter
+      weight at whatever the *current, still-forming* candle's high/low
+      is doing right now, without waiting for the multi-bar confirmation
+      the fully-structural detectors above need — this is what makes
+      the map visibly react on every poll instead of only when a candle
+      closes and confirms new structure, while every well-established,
+      already-confirmed liquidity level still dominates the picture.
+
+    Recency matters for all of the above: older events are linearly
+    downweighted (oldest bar in the window counts at 30% strength, the
+    most recent at 100%), so a map built from hundreds of bars of
+    history isn't dominated by a liquidity pool from days ago that's
+    since become irrelevant.
 
     Returns a sparse list of {top, bottom, intensity} bands — intensity
     normalized to [0, 1] against the single hottest bucket in this
@@ -466,19 +525,32 @@ def build_price_heatmap(candles: list[Candle], num_buckets: int = 40) -> list[di
             return 1.0
         return 0.3 + 0.7 * (max(0, min(n - 1, idx)) / (n - 1))
 
-    for idx, c in enumerate(candles):
-        b_lo, b_hi = _bucket_of(c.low), _bucket_of(c.high)
-        r = _recency(idx)
-        for bi in range(b_lo, b_hi + 1):
-            weights[bi] += r
+    for i in liquidity_highs:
+        weights[_bucket_of(candles[i].high)] += 1.5 * _recency(i)
+    for i in liquidity_lows:
+        weights[_bucket_of(candles[i].low)] += 1.5 * _recency(i)
 
-    # A tight, quiet consolidation range can pile many bars' ranges into
-    # one bucket (real quiet sessions do this) — left as a raw linear
-    # sum, that single crowded bucket would swamp the normalization and
-    # wash out every other genuine cluster to near-zero by comparison.
-    # sqrt() keeps the ordering (a busier bucket still reads hotter)
-    # while giving each additional bar in the same bucket diminishing
-    # rather than linear returns, so one dominant range doesn't flatten
+    for g in grabs:
+        weights[_bucket_of(g.level)] += 2.5 * _recency(g.index)
+
+    for b in breakers:
+        b_lo, b_hi = _bucket_of(b.low), _bucket_of(b.high)
+        for bi in range(min(b_lo, b_hi), max(b_lo, b_hi) + 1):
+            weights[bi] += 1.8 * _recency(b.formed_at_index)
+
+    prov_highs, prov_lows = _provisional_extremes(candles, swing_lookback)
+    for i in prov_highs:
+        weights[_bucket_of(candles[i].high)] += 0.8 * _recency(i)
+    for i in prov_lows:
+        weights[_bucket_of(candles[i].low)] += 0.8 * _recency(i)
+
+    # A tight, quiet consolidation range can pile many points into one
+    # bucket (real quiet sessions do this) — left as a raw linear sum,
+    # that single crowded bucket would swamp the normalization and wash
+    # out every other genuine cluster to near-zero by comparison. sqrt()
+    # keeps the ordering (a busier bucket still reads hotter) while
+    # giving each additional hit in the same bucket diminishing rather
+    # than linear returns, so one dominant range doesn't flatten
     # everything else on the map.
     weights = [w ** 0.5 for w in weights]
 
@@ -900,13 +972,17 @@ def evaluate_ict(
             })
         return out
 
-    # Price heat map (see build_price_heatmap) — a time-at-price read
-    # over `ltf` directly, including its still-forming last candle, so
-    # it changes on every poll rather than only when structure shifts.
-    # Computed unconditionally too, so it's available on the chart even
-    # before a bias/trigger exists — a read of where price has actually
-    # traded doesn't depend on there being an active setup.
-    liquidity_heatmap: list[dict] = build_price_heatmap(ltf)
+    # Liquidity heat map (see build_liquidity_heatmap) — built from the
+    # same real liquidity pools, grabs, and breaker blocks computed
+    # above, plus a lightweight provisional-extreme layer so it still
+    # reacts on every poll to the still-forming last candle rather than
+    # only when a candle closes and confirms new structure. Computed
+    # unconditionally too, so it's available on the chart even before a
+    # bias/trigger exists — a density map of where liquidity sits
+    # doesn't depend on there being an active setup.
+    liquidity_heatmap: list[dict] = build_liquidity_heatmap(
+        ltf, ltf_liquidity_highs, ltf_liquidity_lows, all_liquidity_grabs, ltf_breakers, swing_lookback,
+    )
 
     confluences: list[Confluence] = []
 
